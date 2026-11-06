@@ -1010,7 +1010,18 @@ export const payrollFunctions = {
       .lte('check_in_at', periodEnd)
 
     const totalSeconds = (sessions || []).reduce((s, a) => s + (parseInt(a.worked_seconds) || 0), 0)
-    const totalEarned  = (sessions || []).reduce((s, a) => s + (parseFloat(a.earned_amount) || 0), 0)
+    let totalEarned    = (sessions || []).reduce((s, a) => s + (parseFloat(a.earned_amount) || 0), 0)
+
+    // Sotuv bonusi (025_sales.sql) — asosiy maosh ustiga qo'shiladi
+    const { data: salesRows, error: salesErr } = await supabase
+      .from('sales_reports')
+      .select('bonus_amount')
+      .eq('employee_id', employeeId)
+      .gte('day', periodStart.slice(0, 10))
+      .lte('day', periodEnd.slice(0, 10))
+    if (!salesErr) {
+      totalEarned += (salesRows || []).reduce((s, r) => s + (Number(r.bonus_amount) || 0), 0)
+    }
     const workedDays   = new Set((sessions || []).map(s =>
       new Date(s.check_in_at).toDateString()
     )).size

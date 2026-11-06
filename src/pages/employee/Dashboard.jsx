@@ -4,7 +4,8 @@ import {
   LuTrendingUp, LuDollarSign, LuWallet, LuCalendar, LuChevronRight,
   LuBriefcase,
   LuCoffee,
-  LuClipboardList
+  LuClipboardList,
+  LuShoppingBag
 } from "react-icons/lu"
 import {
   attendanceFunctions, salaryRateFunctions, employeeFunctions,
@@ -13,6 +14,8 @@ import {
 import { useAuth } from '../../context/AuthContext'
 import { Link } from 'react-router-dom'
 import SalaryByAdminNote from '../../components/SalaryByAdminNote'
+import SalesReportForm from '../../components/SalesReportForm'
+import { getMySalesStatus, salesSummary } from '../../lib/sales'
 
 const WEEK_DAYS = [
   { key: 'Mon', short: 'Du', full: 'Dushanba' },
@@ -59,6 +62,9 @@ export default function EmployeeDashboard() {
   const [loading, setLoading]           = useState(true)
   const [message, setMessage]           = useState(null)
   const [liveSeconds, setLiveSeconds]   = useState(0)
+  const [salesStatus, setSalesStatus]   = useState(null)  // sotuv bonusi (025_sales.sql)
+  const [salesOpen, setSalesOpen]       = useState(false)
+  const [monthSales, setMonthSales]     = useState(0)
   const timerRef = useRef(null)
 
   const now = new Date()
@@ -97,9 +103,21 @@ export default function EmployeeDashboard() {
       const closedSessions = sessions.filter(s => s.status === 'closed' || s.status === 'corrected')
       const totalWorked = closedSessions.reduce((s, sess) => s + (sess.worked_seconds || 0), 0)
       // Belgilangan oylikda soat hisoblanmaydi — oylik summasi ko'rsatiladi
-      const totalEarned = isMonthlyRate(rate)
+      // Sotuv bonusi: bugungi holat va shu oy jami
+      const pad = (n) => String(n).padStart(2, '0')
+      const monthFrom = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-01`
+      const monthTo = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate())}`
+      const [salesSt, salesRows] = await Promise.all([
+        getMySalesStatus().catch(() => ({ enabled: false })),
+        supabase.from('sales_reports').select('bonus_amount').eq('employee_id', empId).gte('day', monthFrom).lte('day', monthTo),
+      ])
+      const salesBonus = salesRows.error ? 0 : (salesRows.data || []).reduce((t, r) => t + (Number(r.bonus_amount) || 0), 0)
+      setSalesStatus(salesSt)
+      setMonthSales(salesBonus)
+
+      const totalEarned = (isMonthlyRate(rate)
         ? Number(rate.monthly_salary) || 0
-        : closedSessions.reduce((s, sess) => s + (sess.earned_amount || 0), 0)
+        : closedSessions.reduce((s, sess) => s + (sess.earned_amount || 0), 0)) + salesBonus
       const totalDays = new Set(closedSessions.map(x => new Date(x.check_in_at).toLocaleDateString('en-CA', { timeZone: 'Asia/Tashkent' }))).size
       setMonthStats({ worked: totalWorked, earned: totalEarned, days: totalDays })
 
@@ -329,6 +347,47 @@ export default function EmployeeDashboard() {
           </div>
         )}
       </div>
+
+      {/* Bugungi sotuv — ketishdan oldin tasdiqlanadi */}
+      {salesStatus?.enabled && (
+        <div className={`rounded-xl p-4 border ${salesStatus.report ? 'bg-white border-slate-200' : 'bg-amber-50 border-amber-200'}`}>
+          <div className="flex items-start justify-between gap-3">
+            <div className="min-w-0">
+              <p className="text-sm font-semibold text-slate-900 flex items-center gap-1.5">
+                <LuShoppingBag size={15} className="text-emerald-700" /> Bugungi sotuv
+              </p>
+              {salesStatus.report ? (
+                <>
+                  <p className="text-xs text-slate-500 mt-0.5">{salesSummary(salesStatus.report)}</p>
+                  <p className="text-sm font-semibold text-emerald-700 mt-1">+{formatMoney(salesStatus.report.bonus_amount)} bonus</p>
+                </>
+              ) : (
+                <p className="text-xs text-amber-800 mt-0.5">
+                  {openSession ? "Hali tasdiqlanmagan — ketishdan oldin yozing" : 'Ishdan ketishdan oldin bugun nima sotganingizni yozasiz'}
+                </p>
+              )}
+              {monthSales > 0 && <p className="text-xs text-slate-500 mt-1">Bu oy sotuvdan: {formatMoney(monthSales)}</p>}
+            </div>
+            {(openSession || salesStatus.report) && (
+              <button onClick={() => setSalesOpen(true)} className={salesStatus.report ? 'btn-secondary flex-shrink-0' : 'btn-primary flex-shrink-0'}>
+                {salesStatus.report ? "O'zgartirish" : 'Yozish'}
+              </button>
+            )}
+          </div>
+        </div>
+      )}
+
+      {salesOpen && salesStatus && (
+        <div className="modal-overlay" onClick={e => e.target === e.currentTarget && setSalesOpen(false)}>
+          <div className="modal-content max-w-md p-5">
+            <SalesReportForm
+              status={salesStatus}
+              onDone={() => { setSalesOpen(false); showMessage('Sotuv tasdiqlandi'); load() }}
+              onCancel={() => setSalesOpen(false)}
+            />
+          </div>
+        </div>
+      )}
 
       {/* QR orqali kelish / ketish */}
       <Link

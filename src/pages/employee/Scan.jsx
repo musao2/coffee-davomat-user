@@ -6,6 +6,8 @@ import { getDeviceId } from '../../lib/device'
 import { useAuth } from '../../context/AuthContext'
 import SelfieCapture from '../../components/SelfieCapture'
 import { useLiveLocation } from '../../context/LocationContext'
+import SalesReportForm from '../../components/SalesReportForm'
+import { getMySalesStatus } from '../../lib/sales'
 
 // Tizimga kirmasdan skanerlansa — QR shu yerda eslab qolinadi (masalan "?b=..." yoki "?t=...")
 export const PENDING_QR_KEY = 'fritto_pending_qr'
@@ -17,6 +19,7 @@ const ERRORS = {
                          text: "Davomat uchun yuzingiz rasmga olinishi shart. Qayta rasmga oling." },
   PHOTO_UPLOAD:        { title: 'Rasm yuklanmadi', selfie: true,
                          text: "Internet aloqasini tekshirib, qayta rasmga oling." },
+  SALES_REPORT_REQUIRED: { title: 'Avval sotuvni tasdiqlang', text: "Ishdan ketishdan oldin bugun nima sotganingizni yozing." },
   TOO_SOON:            { title: 'Hozirgina skanerladingiz',   text: "Bir daqiqadan keyin qayta urinib ko'ring." },
   NOT_EMPLOYEE:        { title: 'Xodim topilmadi',            text: "Bu hisob xodimga bog'lanmagan. Administratorga murojaat qiling." },
   DEVICE_NOT_APPROVED: { title: 'Qurilma tasdiqlanmagan',     text: "Bu telefondan davomat qilish uchun admin ruxsat berishi kerak." },
@@ -43,9 +46,11 @@ export default function ScanPage() {
   const [params] = useSearchParams()
   const token  = params.get('t') // ekrandagi (kiosk) QR
   const branch = params.get('b') // qog'ozdagi filial QR
+  // Avval tekshiramiz: ishdan ketayotgan bo'lsa va sotuv yoqilgan bo'lsa — sotuvni so'raymiz
   const [state, setState] = useState(
-    token || branch ? { status: 'selfie' } : { status: 'error', code: 'QR_INVALID' }
+    token || branch ? { status: 'precheck' } : { status: 'error', code: 'QR_INVALID' }
   )
+  const salesRef = useRef(null)  // bugungi tasdiqlangan sotuv (natijada bonusni ko'rsatish uchun)
   const posRef = useRef(null)    // joylashuv (selfi olinayotganda parallel aniqlanadi)
   const photoRef = useRef(null)  // yuklangan rasm yo'li — qayta urinishda qayta ishlatiladi
   const started = useRef(false)
@@ -61,9 +66,27 @@ export default function ScanPage() {
     started.current = true
     try { sessionStorage.removeItem(PENDING_QR_KEY) } catch { /* ahamiyatsiz */ }
     if (branch) startLocating()
-  }, [branch, startLocating])
+    if (!token && !branch) return
+    getMySalesStatus()
+      .then(st => {
+        if (st.report) salesRef.current = st.report
+        setState(st.enabled && st.checked_in && !st.report
+          ? { status: 'sales', sales: st, then: 'selfie' }
+          : { status: 'selfie' })
+      })
+      .catch(() => setState({ status: 'selfie' }))
+  }, [branch, token, startLocating])
 
   const fail = (msg) => {
+    // Sotuv tasdiqlanmagan — formani ochamiz, keyin rasmni qayta olmasdan davom etamiz
+    if ((msg || '').includes('SALES_REPORT_REQUIRED')) {
+      getMySalesStatus()
+        .then(st => setState(st.enabled
+          ? { status: 'sales', sales: st, then: 'resubmit' }
+          : { status: 'error', code: 'SALES_REPORT_REQUIRED' }))
+        .catch(() => setState({ status: 'error', code: 'SALES_REPORT_REQUIRED' }))
+      return
+    }
     const code = Object.keys(ERRORS).find(c => (msg || '').includes(c))
     // "TOO_FAR:85:50" yoki "LOW_ACCURACY:120" — raqamlarni ajratib olamiz
     const args = (msg || '').split(':').slice(1).map(Number).filter(n => Number.isFinite(n))
@@ -136,6 +159,34 @@ export default function ScanPage() {
       if (branch) startLocating()
       submit()
     }
+  }
+
+  if (state.status === 'precheck') {
+    return (
+      <div className="min-h-[70vh] flex items-center justify-center">
+        <div className="w-12 h-12 border-2 border-emerald-600 border-t-transparent rounded-full animate-spin" />
+      </div>
+    )
+  }
+
+  if (state.status === 'sales') {
+    return (
+      <div className="py-4">
+        <SalesReportForm
+          status={state.sales}
+          onDone={(report) => {
+            salesRef.current = report
+            if (state.then === 'resubmit') {
+              if (branch) startLocating()
+              submit()
+            } else {
+              setState({ status: 'selfie' })
+            }
+          }}
+          onCancel={() => window.history.length > 1 ? window.history.back() : window.location.assign('/')}
+        />
+      </div>
+    )
   }
 
   if (state.status === 'selfie') {
@@ -211,7 +262,10 @@ export default function ScanPage() {
               <Row label="Keldi"   value={fmtTime(state.result.check_in_at)} />
               <Row label="Ketdi"   value={fmtTime(state.result.at)} />
               <Row label="Ishladi" value={formatDuration(state.result.worked_seconds)} />
-              <Row label="Topdi"   value={formatMoney(state.result.earned_amount)} strong />
+              <Row label="Topdi"   value={formatMoney(state.result.earned_amount)} strong={!salesRef.current} />
+              {salesRef.current && (
+                <Row label="Sotuvdan bonus" value={`+${formatMoney(salesRef.current.bonus_amount)}`} strong />
+              )}
             </div>
           </>
         )}
